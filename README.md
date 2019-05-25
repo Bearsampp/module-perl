@@ -5,7 +5,7 @@ This is a module of [Neard project](https://github.com/neard/neard) involving Pe
 
 ## Documentation and downloads
 
-http://neard.io/modules/perl
+https://neard.io/modules/perl
 
 ## Issues
 
