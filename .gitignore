@@ -15,3 +15,10 @@
 
 # Qodo
 /.qodo
+
+# Gradle
+.gradle/
+build/
+!gradle-wrapper.jar
+*.gradle.kts.compiled
+.gradle-cache/
