@@ -14,9 +14,12 @@ https://bearsampp.com/module/perl
 The build system has been modernized to align with the Bruno module and now writes artifacts to the shared bearsampp-build directory instead of the local project build/ folder.
 Additionally, Gradle's own temporary `build/` directory is relocated to the shared tmp area so nothing is written under the module folder during builds.
 
+Ant build deprecated:
+- The former Ant build is no longer supported for this module. The `build.xml` file remains only as a stub that instructs users to run Gradle tasks.
+
 Prerequisites:
 - Java 8+
-- Gradle (wrapper or system Gradle)
+- Gradle (system Gradle only; do not use Gradle wrapper in this repository)
 - 7-Zip installed and available in PATH or via `7Z_HOME` when using `bundle.format=7z`
 
 Build properties are defined in `build.properties`:
@@ -35,10 +38,13 @@ Build output location:
 Within the build root, artifacts are organized as:
 `{buildRoot}/{bundle.type}/{bundle.name}/{bundle.release}/bearsampp-{name}-{version}-{release}.{7z|zip}`
 
+Archive layout:
+- The archive contains a single top-level folder named `{name}{version}` (e.g., `perl5.40.0`) that includes all files. This mirrors the Bruno module behavior.
+
 Gradle internal build directory (relocated):
 `{buildRoot}/tmp/gradle/{bundle.type}/{bundle.name}`
 
-Common tasks:
+Common tasks (use system Gradle `gradle` command):
 - List tasks: `gradle tasks`
 - Show build info: `gradle info`
 - Verify environment: `gradle verify`
@@ -50,6 +56,7 @@ Common tasks:
 Notes:
 - Place source bundles under `bin/` as directories named like `perl5.40.0` (or in `bin/archived/`). The build will package these and produce checksums (MD5, SHA1, SHA256, SHA512).
 - When `bundle.format` is `7z`, ensure 7-Zip is installed. You can set `7Z_HOME` to the folder containing `7z.exe`.
+ - The produced 7z/zip preserves the version folder as the archive root (e.g., `perl5.40.0/…`).
 
 ## Issues
 

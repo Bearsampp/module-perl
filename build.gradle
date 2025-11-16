@@ -15,8 +15,7 @@
  *   gradle listVersions                       - List available versions
  */
 
-// Imports for better IDE/static analysis support
-import org.gradle.api.GradleException
+// Note: Avoid importing GradleException for editor analyzers; use RuntimeException instead
 
 plugins {
     id 'base'
@@ -71,9 +70,9 @@ ext {
 // Relocate Gradle's build/ directory to the shared bearsampp-build/tmp path
 buildDir = file(ext.gradleTmpBuildPath)
 
-// Verify dev path exists
+// Dev path (legacy Ant build) is optional in pure Gradle build
 if (!file(ext.devPath).exists()) {
-    throw new GradleException("Dev path not found: ${ext.devPath}. Please ensure the 'dev' project exists in ${ext.rootDir}")
+    logger.lifecycle("[INFO] Optional 'dev' project not found at ${ext.devPath}. Proceeding with pure Gradle build (no Ant).")
 }
 
 // Configure repositories
@@ -100,6 +99,8 @@ def findPerlDirectory(File path) {
     }
     return found
 }
+
+// (No Gradle wrapper task by project policy; use a system Gradle installation)
 
 // Helper function to find 7-Zip executable
 def find7ZipExecutable() {
@@ -141,7 +142,8 @@ def fetchModulesUntouchedProperties() {
         }
         def props = new Properties()
         tempFile.withInputStream { props.load(it) }
-        println "  ✓ Successfully loaded ${props.size()} versions from modules-untouched"
+        // Use ASCII-only to avoid garbled characters on some Windows code pages
+        println "  [OK] Successfully loaded ${props.size()} versions from modules-untouched"
         return props
     } catch (Exception e) {
         println "  ✗ Warning: Could not fetch perl.properties from modules-untouched: ${e.message}"
@@ -193,7 +195,7 @@ def downloadFromModulesUntouched(String version) {
             }
             println "  Download complete from modules-untouched"
         } catch (Exception e) {
-            throw new GradleException((
+            throw new RuntimeException((
                 """
                 Failed to download from modules-untouched: ${e.message}
 
@@ -235,19 +237,19 @@ def downloadAndExtractPerl(String version) {
                 .start()
             process.inputStream.eachLine { line -> if (line.trim()) println "    ${line}" }
             def exitCode = process.waitFor()
-            if (exitCode != 0) throw new GradleException("7zip extraction failed with exit code: ${exitCode}")
+            if (exitCode != 0) throw new RuntimeException("7zip extraction failed with exit code: ${exitCode}")
         } else {
-            throw new GradleException("7zip not found. Please install 7zip or extract manually.")
+            throw new RuntimeException("7zip not found. Please install 7zip or extract manually.")
         }
     } else if (filename.endsWith('.zip')) {
         copy { from zipTree(downloadedFile); into extractPath }
     } else {
-        throw new GradleException("Unsupported archive format: ${filename}")
+        throw new RuntimeException("Unsupported archive format: ${filename}")
     }
 
     println "  Extraction complete"
     def perlDir = findPerlDirectory(extractPath)
-    if (!perlDir) throw new GradleException("Could not find perl.exe in extracted files")
+    if (!perlDir) throw new RuntimeException("Could not find perl.exe in extracted files")
     println "  Found Perl directory: ${perlDir.name}"
     println "\nNOTE: Version ${version} was sourced from modules-untouched (or fallback URL)."
     return perlDir
@@ -255,7 +257,7 @@ def downloadAndExtractPerl(String version) {
 
 // Helper function to generate hash files
 def generateHashFiles(File file) {
-    if (!file.exists()) throw new GradleException("File not found for hashing: ${file}")
+    if (!file.exists()) throw new RuntimeException("File not found for hashing: ${file}")
     def writeHash = { String algo, String ext ->
         def digest = java.security.MessageDigest.getInstance(algo)
         file.withInputStream { is ->
@@ -384,7 +386,7 @@ tasks.register('release') {
         if (!versionToBuild) {
             def availableVersions = getAvailableVersions()
             if (availableVersions.isEmpty()) {
-                throw new GradleException("No versions found in bin/ directory")
+                throw new RuntimeException("No versions found in bin/ directory")
             }
 
             println ""
@@ -412,7 +414,7 @@ tasks.register('release') {
                 def reader = new BufferedReader(new InputStreamReader(System.in))
                 input = reader.readLine()
             } catch (Exception e) {
-                throw new GradleException("""
+                throw new RuntimeException("""
                     Failed to read input. Please use non-interactive mode:
                       gradle release -PbundleVersion=X.X.X
 
@@ -420,7 +422,7 @@ tasks.register('release') {
                 """.stripIndent())
             }
             if (!input || input.trim().isEmpty()) {
-                throw new GradleException("""
+                throw new RuntimeException("""
                     No version selected. Please use non-interactive mode:
                       gradle release -PbundleVersion=X.X.X
 
@@ -431,7 +433,7 @@ tasks.register('release') {
             if (cleaned.isInteger()) {
                 def idx = cleaned.toInteger()
                 if (idx < 1 || idx > availableVersions.size()) {
-                    throw new GradleException("""
+                    throw new RuntimeException("""
                         Invalid selection index: ${cleaned}
 
                         Please choose a number between 1 and ${availableVersions.size()} or enter a version string.
@@ -441,7 +443,7 @@ tasks.register('release') {
             } else {
                 versionToBuild = cleaned
                 if (!availableVersions.contains(versionToBuild)) {
-                    throw new GradleException("""
+                    throw new RuntimeException("""
                         Invalid version: ${versionToBuild}
 
                         Please choose from available versions:
@@ -464,7 +466,7 @@ tasks.register('release') {
         if (!bundlePath.exists()) {
             bundlePath = file("${projectDir}/bin/archived/${bundleName}${versionToBuild}")
             if (!bundlePath.exists()) {
-                throw new GradleException("Bundle version not found in bin/ or bin/archived/\n\nAvailable versions:\n${getAvailableVersions().collect { "  - ${it}" }.join('\n')}")
+                throw new RuntimeException("Bundle version not found in bin/ or bin/archived/\n\nAvailable versions:\n${getAvailableVersions().collect { "  - ${it}" }.join('\n')}")
             }
         }
 
@@ -496,7 +498,7 @@ tasks.register('release') {
                     try {
                         bundleSrcFinal = downloadAndExtractPerl(versionToBuild)
                     } catch (Exception e) {
-                        throw new GradleException((
+                        throw new RuntimeException((
                             """
                             Failed to download Perl binaries: ${e.message}
 
@@ -512,13 +514,14 @@ tasks.register('release') {
         }
 
         perlExe = file("${bundleSrcFinal}/perl.exe")
-        if (!perlExe.exists()) { throw new GradleException("perl.exe not found at ${perlExe}") }
+        if (!perlExe.exists()) { throw new RuntimeException("perl.exe not found at ${perlExe}") }
 
         println "Source folder: ${bundleSrcFinal}"
         println ""
 
-        // Prepare output directory
-        def prepPath = file("${bundleTmpPrepPath}/${bundleName}${versionToBuild}")
+        // Prepare output directory (this is the top-level folder that must be kept inside the archive)
+        def versionFolderName = "${bundleName}${versionToBuild}"
+        def prepPath = file("${bundleTmpPrepPath}/${versionFolderName}")
         if (prepPath.exists()) { delete prepPath }
         prepPath.mkdirs()
 
@@ -556,18 +559,19 @@ tasks.register('release') {
             if (archiveFile.exists()) delete archiveFile
 
             def sevenZipExe = find7ZipExecutable()
-            if (!sevenZipExe) throw new GradleException("7-Zip not found. Please install 7-Zip or set 7Z_HOME environment variable.")
+            if (!sevenZipExe) throw new RuntimeException("7-Zip not found. Please install 7-Zip or set 7Z_HOME environment variable.")
             println "Using 7-Zip: ${sevenZipExe}"
-            println "Compressing ${bundleName}${versionToBuild} to ${archiveFile.name}..."
+            println "Compressing ${versionFolderName} to ${archiveFile.name} (including top-level folder)..."
 
-            def command = [ sevenZipExe, 'a', '-t7z', archiveFile.absolutePath.toString(), '.' ]
+            // Run 7z from the parent directory and add the folder by name to preserve the top-level folder in the archive
+            def command = [ sevenZipExe, 'a', '-t7z', archiveFile.absolutePath.toString(), versionFolderName ]
             def process = new ProcessBuilder(command as String[])
-                .directory(prepPath)
+                .directory(prepPath.parentFile)
                 .redirectErrorStream(true)
                 .start()
             process.inputStream.eachLine { line -> if (line.trim()) println "  ${line}" }
             def exitCode = process.waitFor()
-            if (exitCode != 0) throw new GradleException("7zip compression failed with exit code: ${exitCode}")
+            if (exitCode != 0) throw new RuntimeException("7zip compression failed with exit code: ${exitCode}")
 
             println "Archive created: ${archiveFile}"
             println "Generating hash files..."
@@ -575,9 +579,12 @@ tasks.register('release') {
         } else {
             def archiveFile = file("${destFile}.zip")
             if (archiveFile.exists()) delete archiveFile
-            println "Compressing ${bundleName}${versionToBuild} to ${archiveFile.name}..."
+            println "Compressing ${versionFolderName} to ${archiveFile.name} (including top-level folder)..."
             task("zipArchive_${versionToBuild}", type: Zip) {
-                from prepPath
+                // Include the version folder itself so the archive has the top-level directory
+                from(prepPath.parentFile) {
+                    include "${versionFolderName}/**"
+                }
                 destinationDirectory = archiveFile.parentFile
                 archiveFileName = archiveFile.name
             }.execute()
@@ -602,7 +609,7 @@ tasks.register('releaseAll') {
 
     doLast {
         def versions = getAvailableVersions()
-        if (versions.isEmpty()) throw new GradleException('No versions found in bin/ or bin/archived/')
+        if (versions.isEmpty()) throw new RuntimeException('No versions found in bin/ or bin/archived/')
 
         println ""
         println "=".multiply(70)
@@ -636,7 +643,7 @@ tasks.register('releaseAll') {
         if (!failed.isEmpty()) {
             println "\nFailed versions:"
             failed.each { println "  - ${it}" }
-            throw new GradleException("${failed.size()} version(s) failed to build")
+            throw new RuntimeException("${failed.size()} version(s) failed to build")
         } else {
             println "[SUCCESS] All versions built successfully!"
         }
@@ -677,7 +684,7 @@ tasks.register('verify') {
         println "-".multiply(60)
 
         def allPassed = checks.values().every { it }
-        if (!allPassed) throw new GradleException('Build environment verification failed')
+        if (!allPassed) throw new RuntimeException('Build environment verification failed')
         println '\n[SUCCESS] All checks passed! Build environment is ready.'
         println "\nYou can now run:\n  gradle release -PbundleVersion=5.40.0   - Build release for version\n  gradle listVersions                     - List available versions"
     }
@@ -797,7 +804,7 @@ tasks.register('validateProperties') {
         if (!missing.isEmpty()) {
             println '[ERROR] Missing required properties:'
             missing.each { println "  - ${it}" }
-            throw new GradleException('build.properties validation failed')
+            throw new RuntimeException('build.properties validation failed')
         }
         println '[SUCCESS] All required properties are present:'
         required.each { println "    ${it} = ${buildProps.getProperty(it)}" }
