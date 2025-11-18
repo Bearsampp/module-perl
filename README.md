@@ -5,58 +5,66 @@
 
 This is a module of [Bearsampp project](https://github.com/bearsampp/bearsampp) involving Perl.
 
-## Documentation and downloads
+## Build System
 
-https://bearsampp.com/module/perl
+This project uses **Gradle** as its build system with a pure Gradle implementation (no wrapper).
 
-## Build (Gradle)
+### Quick Start
 
-The build system has been modernized to align with the Bruno module and now writes artifacts to the shared bearsampp-build directory instead of the local project build/ folder.
-Additionally, Gradle's own temporary `build/` directory is relocated to the shared tmp area so nothing is written under the module folder during builds.
+```bash
+# Display build information
+gradle info
 
-Ant build deprecated:
-- The former Ant build is no longer supported for this module. The `build.xml` file remains only as a stub that instructs users to run Gradle tasks.
+# List all available tasks
+gradle tasks
 
-Prerequisites:
-- Java 8+
-- Gradle (system Gradle only; do not use Gradle wrapper in this repository)
-- 7-Zip installed and available in PATH or via `7Z_HOME` when using `bundle.format=7z`
+# Verify build environment
+gradle verify
 
-Build properties are defined in `build.properties`:
-- `bundle.name` (e.g., `perl`)
-- `bundle.release` (e.g., `2025.4.26`)
-- `bundle.type` (e.g., `tools`)
-- `bundle.format` (`7z` or `zip`)
-- Optional: `build.path` to override the default build root
+# Build a release (interactive)
+gradle release
 
-Build output location:
-- Default root: `<repo-root>/../bearsampp-build`
-- You can override with:
-  - `build.path` in `build.properties`, or
-  - Environment variable `BEARSAMPP_BUILD_PATH`
+# Build a specific version (non-interactive)
+gradle release -PbundleVersion=5.40.0
 
-Within the build root, artifacts are organized as:
-`{buildRoot}/{bundle.type}/{bundle.name}/{bundle.release}/bearsampp-{name}-{version}-{release}.{7z|zip}`
+# Build all versions
+gradle releaseAll
 
-Archive layout:
-- The archive contains a single top-level folder named `{name}{version}` (e.g., `perl5.40.0`) that includes all files. This mirrors the Bruno module behavior.
+# Clean build artifacts
+gradle clean
+```
 
-Gradle internal build directory (relocated):
-`{buildRoot}/tmp/gradle/{bundle.type}/{bundle.name}`
+### Prerequisites
 
-Common tasks (use system Gradle `gradle` command):
-- List tasks: `gradle tasks`
-- Show build info: `gradle info`
-- Verify environment: `gradle verify`
-- List available versions from `bin/` and `bin/archived/`: `gradle listVersions`
-- Build a specific version: `gradle release -PbundleVersion=5.40.0`
-- Build all available versions in `bin*/`: `gradle releaseAll`
-- Clean Gradle project artifacts: `gradle clean`
+| Requirement       | Version       | Purpose                                  |
+|-------------------|---------------|------------------------------------------|
+| **Java**          | 8+            | Required for Gradle execution            |
+| **Gradle**        | 8.0+          | Build automation tool                    |
+| **7-Zip**         | Latest        | Archive compression (when using 7z format) |
 
-Notes:
-- Place source bundles under `bin/` as directories named like `perl5.40.0` (or in `bin/archived/`). The build will package these and produce checksums (MD5, SHA1, SHA256, SHA512).
-- When `bundle.format` is `7z`, ensure 7-Zip is installed. You can set `7Z_HOME` to the folder containing `7z.exe`.
- - The produced 7z/zip preserves the version folder as the archive root (e.g., `perl5.40.0/…`).
+### Available Tasks
+
+| Task                  | Description                                      |
+|-----------------------|--------------------------------------------------|
+| `release`             | Build release package (interactive/non-interactive) |
+| `releaseAll`          | Build all available versions in bin/             |
+| `clean`               | Clean build artifacts and temporary files        |
+| `verify`              | Verify build environment and dependencies        |
+| `info`                | Display build configuration information          |
+| `listVersions`        | List available bundle versions in bin/           |
+| `listReleases`        | List releases from modules-untouched             |
+| `checkModulesUntouched` | Check modules-untouched integration            |
+| `validateProperties`  | Validate build.properties configuration          |
+
+For complete documentation, see [.gradle-docs/README.md](.gradle-docs/README.md)
+
+## Documentation
+
+- **Build Documentation**: [.gradle-docs/README.md](.gradle-docs/README.md)
+- **Task Reference**: [.gradle-docs/TASKS.md](.gradle-docs/TASKS.md)
+- **Configuration Guide**: [.gradle-docs/CONFIGURATION.md](.gradle-docs/CONFIGURATION.md)
+- **API Reference**: [.gradle-docs/API.md](.gradle-docs/API.md)
+- **Module Downloads**: https://bearsampp.com/module/perl
 
 ## Issues
 
