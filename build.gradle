@@ -1,0 +1,830 @@
+/*
+ * Bearsampp Module Perl - Gradle Build
+ *
+ * This is a 100% Gradle build configuration for the Perl module,
+ * aligned with the Bruno module build. It relocates build outputs to
+ * the shared bearsampp-build directory and provides modern tasks.
+ *
+ * Usage:
+ *   gradle tasks                              - List all available tasks
+ *   gradle release -PbundleVersion=5.40.0     - Build release for specific version
+ *   gradle releaseAll                         - Build all versions in bin/
+ *   gradle clean                              - Clean Gradle project build dir
+ *   gradle info                               - Display build information
+ *   gradle verify                             - Verify build environment
+ *   gradle listVersions                       - List available versions
+ */
+
+// Note: Avoid importing GradleException for editor analyzers; use RuntimeException instead
+
+plugins {
+    id 'base'
+}
+
+// ============================================================================
+// PROJECT CONFIGURATION
+// ============================================================================
+
+// Load build properties
+def buildProps = new Properties()
+file('build.properties').withInputStream { buildProps.load(it) }
+
+// Project information
+group = 'com.bearsampp.modules'
+version = buildProps.getProperty('bundle.release', '1.0.0')
+description = "Bearsampp Module - ${buildProps.getProperty('bundle.name', 'perl')}"
+
+// Define project paths
+ext {
+    projectBasedir = projectDir.absolutePath
+    rootDir = projectDir.parent
+    devPath = file("${rootDir}/dev").absolutePath
+
+    // Bundle properties from build.properties
+    bundleName = buildProps.getProperty('bundle.name', 'perl')
+    bundleRelease = buildProps.getProperty('bundle.release', '1.0.0')
+    bundleType = buildProps.getProperty('bundle.type', 'tools')
+    bundleFormat = buildProps.getProperty('bundle.format', '7z')
+
+    // Build paths - with configurable base path
+    // Priority: 1) build.properties, 2) Environment variable, 3) Default
+    def buildPathFromProps = buildProps.getProperty('build.path', '').trim()
+    def buildPathFromEnv = System.getenv('BEARSAMPP_BUILD_PATH') ?: ''
+    def defaultBuildPath = "${rootDir}/bearsampp-build"
+
+    buildBasePath = buildPathFromProps ?: (buildPathFromEnv ?: defaultBuildPath)
+
+    // Use shared bearsampp-build/tmp directory structure
+    buildTmpPath = file("${buildBasePath}/tmp").absolutePath
+    bundleTmpBuildPath = file("${buildTmpPath}/bundles_build/${bundleType}/${bundleName}").absolutePath
+    bundleTmpPrepPath = file("${buildTmpPath}/bundles_prep/${bundleType}/${bundleName}").absolutePath
+    bundleTmpSrcPath = file("${buildTmpPath}/bundles_src").absolutePath
+    // New: downloads/extract paths (to mirror Bruno behavior)
+    bundleTmpDownloadPath = file("${buildTmpPath}/downloads/${bundleName}").absolutePath
+    bundleTmpExtractPath = file("${buildTmpPath}/extract/${bundleName}").absolutePath
+
+    // Gradle's own build directory relocated to shared tmp (to mirror Bruno behavior)
+    gradleTmpBuildPath = file("${buildTmpPath}/gradle/${bundleType}/${bundleName}").absolutePath
+}
+
+// Relocate Gradle's build/ directory to the shared bearsampp-build/tmp path
+buildDir = file(ext.gradleTmpBuildPath)
+
+// Dev path (legacy Ant build) is optional in pure Gradle build
+if (!file(ext.devPath).exists()) {
+    logger.lifecycle("[INFO] Optional 'dev' project not found at ${ext.devPath}. Proceeding with pure Gradle build (no Ant).")
+}
+
+// Configure repositories
+repositories {
+    mavenCentral()
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Helper function to find Perl directory (must contain perl.exe)
+def findPerlDirectory(File path) {
+    if (!path?.exists()) return null
+    def hasPerlExe = { File dir -> new File(dir, 'perl.exe').exists() || new File(dir, 'Perl.exe').exists() }
+    if (hasPerlExe(path)) return path
+    File found = null
+    def stack = new ArrayDeque<File>()
+    path.listFiles()?.findAll { it.isDirectory() }?.each { stack.push(it) }
+    while (!stack.isEmpty() && found == null) {
+        def dir = stack.pop()
+        if (hasPerlExe(dir)) { found = dir; break }
+        dir.listFiles()?.findAll { it.isDirectory() }?.each { stack.push(it) }
+    }
+    return found
+}
+
+// (No Gradle wrapper task by project policy; use a system Gradle installation)
+
+// Helper function to find 7-Zip executable
+def find7ZipExecutable() {
+    def sevenZipHome = System.getenv('7Z_HOME')
+    if (sevenZipHome) {
+        def exe = file("${sevenZipHome}/7z.exe")
+        if (exe.exists()) return exe.absolutePath
+    }
+    def commonPaths = [
+        'C:/Program Files/7-Zip/7z.exe',
+        'C:/Program Files (x86)/7-Zip/7z.exe',
+        'D:/Program Files/7-Zip/7z.exe',
+        'D:/Program Files (x86)/7-Zip/7z.exe'
+    ]
+    for (path in commonPaths) { def exe = file(path); if (exe.exists()) return exe.absolutePath }
+    try {
+        def process = ['where', '7z.exe'].execute()
+        process.waitFor()
+        if (process.exitValue() == 0) { def out = process.text.trim(); if (out) return out.split('\n')[0].trim() }
+    } catch (Exception ignored) {}
+    return null
+}
+
+// Fetch perl.properties from modules-untouched repository
+def fetchModulesUntouchedProperties() {
+    def propsUrl = "https://raw.githubusercontent.com/Bearsampp/modules-untouched/main/modules/perl.properties"
+
+    println "Fetching perl.properties from modules-untouched repository..."
+    println "  URL: ${propsUrl}"
+
+    def tempFile = file("${bundleTmpDownloadPath}/perl-untouched.properties")
+    tempFile.parentFile.mkdirs()
+
+    try {
+        new URL(propsUrl).withInputStream { input ->
+            tempFile.withOutputStream { output ->
+                output << input
+            }
+        }
+        def props = new Properties()
+        tempFile.withInputStream { props.load(it) }
+        // Use ASCII-only to avoid garbled characters on some Windows code pages
+        println "  [OK] Successfully loaded ${props.size()} versions from modules-untouched"
+        return props
+    } catch (Exception e) {
+        println "  ✗ Warning: Could not fetch perl.properties from modules-untouched: ${e.message}"
+        println "  Will fall back to standard URL format if needed"
+        return null
+    }
+}
+
+// Download from modules-untouched (with fallback URL pattern)
+def downloadFromModulesUntouched(String version) {
+    println "Checking modules-untouched repository..."
+
+    def untouchedProps = fetchModulesUntouchedProperties()
+    def untouchedUrl = null
+
+    if (untouchedProps) {
+        untouchedUrl = untouchedProps.getProperty(version)
+        if (untouchedUrl) {
+            println "Found version ${version} in modules-untouched perl.properties"
+            println "Downloading from:\n  ${untouchedUrl}"
+        } else {
+            println "Version ${version} not found in modules-untouched perl.properties"
+            println "Attempting to construct URL based on standard format..."
+            untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${version}/perl-${version}-win64.7z"
+            println "  ${untouchedUrl}"
+        }
+    } else {
+        println "Could not fetch perl.properties, using standard URL format..."
+        untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${version}/perl-${version}-win64.7z"
+        println "  ${untouchedUrl}"
+    }
+
+    def filename = untouchedUrl.substring(untouchedUrl.lastIndexOf('/') + 1)
+    def downloadDir = file(bundleTmpDownloadPath)
+    downloadDir.mkdirs()
+    def downloadedFile = file("${downloadDir}/${filename}")
+
+    if (!downloadedFile.exists()) {
+        println "  Downloading to: ${downloadedFile}"
+        try {
+            new URL(untouchedUrl).withInputStream { input ->
+                downloadedFile.withOutputStream { output ->
+                    byte[] buf = new byte[8192]
+                    int read
+                    while ((read = input.read(buf)) != -1) {
+                        output.write(buf, 0, read)
+                    }
+                }
+            }
+            println "  Download complete from modules-untouched"
+        } catch (Exception e) {
+            throw new RuntimeException((
+                """
+                Failed to download from modules-untouched: ${e.message}
+
+                Tried URL: ${untouchedUrl}
+
+                Please verify:
+                1. Version ${version} exists in modules-untouched repository
+                2. The URL is correct in perl.properties or matches format: perl-{version}/perl-{version}-win64.7z
+                3. You have internet connectivity
+                """
+            ).stripIndent())
+        }
+    } else {
+        println "  Using cached file: ${downloadedFile}"
+    }
+
+    return downloadedFile
+}
+
+// Download and extract Perl binaries, return directory that contains perl.exe
+def downloadAndExtractPerl(String version) {
+    def downloadedFile = downloadFromModulesUntouched(version)
+
+    def extractBase = file(bundleTmpExtractPath)
+    extractBase.mkdirs()
+    println "  Extracting archive..."
+    def extractPath = file("${extractBase}/${version}")
+    if (extractPath.exists()) { delete extractPath }
+    extractPath.mkdirs()
+
+    def filename = downloadedFile.name
+    if (filename.endsWith('.7z')) {
+        def sevenZipPath = find7ZipExecutable()
+        if (sevenZipPath) {
+            def command = [ sevenZipPath.toString(), 'x', downloadedFile.absolutePath.toString(), "-o${extractPath.absolutePath}".toString(), '-y' ]
+            def process = new ProcessBuilder(command as String[])
+                .directory(extractPath)
+                .redirectErrorStream(true)
+                .start()
+            process.inputStream.eachLine { line -> if (line.trim()) println "    ${line}" }
+            def exitCode = process.waitFor()
+            if (exitCode != 0) throw new RuntimeException("7zip extraction failed with exit code: ${exitCode}")
+        } else {
+            throw new RuntimeException("7zip not found. Please install 7zip or extract manually.")
+        }
+    } else if (filename.endsWith('.zip')) {
+        copy { from zipTree(downloadedFile); into extractPath }
+    } else {
+        throw new RuntimeException("Unsupported archive format: ${filename}")
+    }
+
+    println "  Extraction complete"
+    def perlDir = findPerlDirectory(extractPath)
+    if (!perlDir) throw new RuntimeException("Could not find perl.exe in extracted files")
+    println "  Found Perl directory: ${perlDir.name}"
+    println "\nNOTE: Version ${version} was sourced from modules-untouched (or fallback URL)."
+    return perlDir
+}
+
+// Helper function to generate hash files
+def generateHashFiles(File file) {
+    if (!file.exists()) throw new RuntimeException("File not found for hashing: ${file}")
+    def writeHash = { String algo, String ext ->
+        def digest = java.security.MessageDigest.getInstance(algo)
+        file.withInputStream { is ->
+            byte[] buf = new byte[8192]; int read
+            while ((read = is.read(buf)) != -1) { digest.update(buf, 0, read) }
+        }
+        def hash = digest.digest().collect { String.format('%02x', it) }.join('')
+        def outFile = new File("${file.absolutePath}.${ext}")
+        outFile.text = "${hash} ${file.name}\n"
+        println "  Created: ${outFile.name}"
+    }
+    writeHash('MD5', 'md5')
+    writeHash('SHA-1', 'sha1')
+    writeHash('SHA-256', 'sha256')
+    writeHash('SHA-512', 'sha512')
+}
+
+// Helper to enumerate available versions (bin and bin/archived)
+def getAvailableVersions() {
+    def versions = []
+    def binDir = file("${projectDir}/bin")
+    if (binDir.exists()) {
+        versions.addAll(binDir.listFiles()
+            ?.findAll { it.isDirectory() && it.name.startsWith(bundleName) && it.name != 'archived' }
+            ?.collect { it.name.replace(bundleName, '') } ?: [])
+    }
+    def archivedDir = file("${projectDir}/bin/archived")
+    if (archivedDir.exists()) {
+        versions.addAll(archivedDir.listFiles()
+            ?.findAll { it.isDirectory() && it.name.startsWith(bundleName) }
+            ?.collect { it.name.replace(bundleName, '') } ?: [])
+    }
+    return versions.unique().sort()
+}
+
+// ============================================================================
+// GRADLE TASKS
+// ============================================================================
+
+// Task: Display build information
+tasks.register('info') {
+    group = 'help'
+    description = 'Display build configuration information'
+
+    // Capture at configuration time
+    def projectName = project.name
+    def projectVersion = project.version
+    def projectDescription = project.description
+    def projectBasedirValue = projectBasedir
+    def rootDirValue = rootDir
+    def devPathValue = devPath
+    def bundleNameValue = bundleName
+    def bundleReleaseValue = bundleRelease
+    def bundleTypeValue = bundleType
+    def bundleFormatValue = bundleFormat
+    def buildBasePathValue = buildBasePath
+    def buildTmpPathValue = buildTmpPath
+    def bundleTmpPrepPathValue = bundleTmpPrepPath
+    def bundleTmpBuildPathValue = bundleTmpBuildPath
+    def bundleTmpSrcPathValue = bundleTmpSrcPath
+    def javaVersion = JavaVersion.current()
+    def javaHome = System.getProperty('java.home')
+    def gradleVersion = gradle.gradleVersion
+    def gradleHome = gradle.gradleHomeDir
+
+    doLast {
+        println """
+        ================================================================
+                  Bearsampp Module Perl - Build Info
+        ================================================================
+
+        Project:        ${projectName}
+        Version:        ${projectVersion}
+        Description:    ${projectDescription}
+
+        Bundle Properties:
+          Name:         ${bundleNameValue}
+          Release:      ${bundleReleaseValue}
+          Type:         ${bundleTypeValue}
+          Format:       ${bundleFormatValue}
+
+        Paths:
+          Project Dir:  ${projectBasedirValue}
+          Root Dir:     ${rootDirValue}
+          Dev Path:     ${devPathValue}
+          Build Base:   ${buildBasePathValue}
+          Build Tmp:    ${buildTmpPathValue}
+          Tmp Prep:     ${bundleTmpPrepPathValue}
+          Tmp Build:    ${bundleTmpBuildPathValue}
+          Tmp Src:      ${bundleTmpSrcPathValue}
+          Gradle Build: ${buildDir}
+
+        Java:
+          Version:      ${javaVersion}
+          Home:         ${javaHome}
+
+        Gradle:
+          Version:      ${gradleVersion}
+          Home:         ${gradleHome}
+
+        Available Task Groups:
+          * build        - Build and package tasks
+          * help         - Help and information tasks
+
+        Quick Start:
+          gradle tasks                              - List all available tasks
+          gradle info                               - Show this information
+          gradle release -PbundleVersion=5.40.0     - Build specific version
+          gradle releaseAll                         - Build all versions
+          gradle clean                              - Clean build artifacts
+          gradle verify                             - Verify build environment
+        """.stripIndent()
+    }
+}
+
+// Task: Main release task - build a specific version
+tasks.register('release') {
+    group = 'build'
+    description = 'Build release package for a specific version (use -PbundleVersion=X.X.X or run interactively)'
+
+    def versionProperty = project.findProperty('bundleVersion')
+
+    doLast {
+        def versionToBuild = versionProperty
+
+        if (!versionToBuild) {
+            def availableVersions = getAvailableVersions()
+            if (availableVersions.isEmpty()) {
+                throw new RuntimeException("No versions found in bin/ directory")
+            }
+
+            println ""
+            println "=".multiply(70)
+            println "Interactive Release Mode"
+            println "=".multiply(70)
+            println ""
+            println "Available versions:"
+
+            def binDir = file("${projectDir}/bin")
+            def archivedDir = file("${projectDir}/bin/archived")
+
+            availableVersions.eachWithIndex { v, idx ->
+                def location = ""
+                if (binDir.exists() && file("${binDir}/${bundleName}${v}").exists()) { location = "[bin]" }
+                else if (archivedDir.exists() && file("${archivedDir}/${bundleName}${v}").exists()) { location = "[bin/archived]" }
+                println "  ${(idx + 1).toString().padLeft(2)}. ${v.padRight(15)} ${location}"
+            }
+            println ""
+            println "Enter version to build (index or version string):"
+            println ""
+
+            def input = null
+            try {
+                def reader = new BufferedReader(new InputStreamReader(System.in))
+                input = reader.readLine()
+            } catch (Exception e) {
+                throw new RuntimeException("""
+                    Failed to read input. Please use non-interactive mode:
+                      gradle release -PbundleVersion=X.X.X
+
+                    Available versions: ${availableVersions.join(', ')}
+                """.stripIndent())
+            }
+            if (!input || input.trim().isEmpty()) {
+                throw new RuntimeException("""
+                    No version selected. Please use non-interactive mode:
+                      gradle release -PbundleVersion=X.X.X
+
+                    Available versions: ${availableVersions.join(', ')}
+                """.stripIndent())
+            }
+            def cleaned = input.trim()
+            if (cleaned.isInteger()) {
+                def idx = cleaned.toInteger()
+                if (idx < 1 || idx > availableVersions.size()) {
+                    throw new RuntimeException("""
+                        Invalid selection index: ${cleaned}
+
+                        Please choose a number between 1 and ${availableVersions.size()} or enter a version string.
+                    """.stripIndent())
+                }
+                versionToBuild = availableVersions[idx - 1]
+            } else {
+                versionToBuild = cleaned
+                if (!availableVersions.contains(versionToBuild)) {
+                    throw new RuntimeException("""
+                        Invalid version: ${versionToBuild}
+
+                        Please choose from available versions:
+                        ${availableVersions.collect { "  - ${it}" }.join('\n')}
+                    """.stripIndent())
+                }
+            }
+            println ""
+            println "Selected version: ${versionToBuild}"
+        }
+
+        println ""
+        println "=".multiply(70)
+        println "Building ${bundleName} ${versionToBuild}"
+        println "=".multiply(70)
+        println ""
+
+        // Validate version exists (bin or archived)
+        def bundlePath = file("${projectDir}/bin/${bundleName}${versionToBuild}")
+        if (!bundlePath.exists()) {
+            bundlePath = file("${projectDir}/bin/archived/${bundleName}${versionToBuild}")
+            if (!bundlePath.exists()) {
+                throw new RuntimeException("Bundle version not found in bin/ or bin/archived/\n\nAvailable versions:\n${getAvailableVersions().collect { "  - ${it}" }.join('\n')}")
+            }
+        }
+
+        println "Bundle path: ${bundlePath}"
+        println ""
+
+        // Determine source paths
+        def bundleSrcDest = bundlePath
+        def bundleSrcFinal = bundleSrcDest
+
+        // Verify perl.exe exists; if not, try to use cached extract or download from modules-untouched
+        def perlExe = file("${bundleSrcFinal}/perl.exe")
+        if (!perlExe.exists()) {
+            def nested = findPerlDirectory(bundleSrcFinal)
+            if (nested) {
+                bundleSrcFinal = nested
+            } else {
+                // Try cached extract first
+                def cachedExtract = file("${bundleTmpExtractPath}/${versionToBuild}")
+                def cachedDir = findPerlDirectory(cachedExtract)
+                if (cachedDir && cachedDir.exists()) {
+                    println "Using cached Perl binaries from bearsampp-build/tmp"
+                    bundleSrcFinal = cachedDir
+                } else {
+                    println ""
+                    println "Perl binaries not found"
+                    println "Downloading Perl ${versionToBuild}..."
+                    println ""
+                    try {
+                        bundleSrcFinal = downloadAndExtractPerl(versionToBuild)
+                    } catch (Exception e) {
+                        throw new RuntimeException((
+                            """
+                            Failed to download Perl binaries: ${e.message}
+
+                            You can manually download and extract Perl binaries to:
+                              ${bundleSrcDest}/
+
+                            Or check that version ${versionToBuild} exists in modules-untouched perl.properties
+                            """
+                        ).stripIndent())
+                    }
+                }
+            }
+        }
+
+        perlExe = file("${bundleSrcFinal}/perl.exe")
+        if (!perlExe.exists()) { throw new RuntimeException("perl.exe not found at ${perlExe}") }
+
+        println "Source folder: ${bundleSrcFinal}"
+        println ""
+
+        // Prepare output directory (this is the top-level folder that must be kept inside the archive)
+        def versionFolderName = "${bundleName}${versionToBuild}"
+        def prepPath = file("${bundleTmpPrepPath}/${versionFolderName}")
+        if (prepPath.exists()) { delete prepPath }
+        prepPath.mkdirs()
+
+        // Copy Perl files from source
+        println "Copying ${bundleName} files..."
+        copy { from bundleSrcFinal; into prepPath }
+
+        // Overlay files from bin bundle directory (if different)
+        if (bundleSrcDest.absolutePath != bundleSrcFinal.absolutePath) {
+            println "Overlaying bundle files from bin directory..."
+            copy { from bundleSrcDest; into prepPath }
+        }
+
+        // Copy to bundles_build directory (non-archive version for dev)
+        println ""
+        println "Copying to bundles_build directory..."
+        def buildPathNonZip = file("${bundleTmpBuildPath}/${bundleName}${versionToBuild}")
+        if (buildPathNonZip.exists()) { delete buildPathNonZip }
+        buildPathNonZip.mkdirs()
+        copy { from prepPath; into buildPathNonZip }
+        println "Non-zip version available at: ${buildPathNonZip}"
+
+        println ""
+        println "Preparing archive..."
+
+        // bearsampp-build/{bundleType}/{bundleName}/{bundleRelease}
+        def buildPath = file(buildBasePath)
+        def buildBinsPath = file("${buildPath}/${bundleType}/${bundleName}/${bundleRelease}")
+        buildBinsPath.mkdirs()
+
+        def destFile = file("${buildBinsPath}/bearsampp-${bundleName}-${versionToBuild}-${bundleRelease}")
+
+        if (bundleFormat == '7z') {
+            def archiveFile = file("${destFile}.7z")
+            if (archiveFile.exists()) delete archiveFile
+
+            def sevenZipExe = find7ZipExecutable()
+            if (!sevenZipExe) throw new RuntimeException("7-Zip not found. Please install 7-Zip or set 7Z_HOME environment variable.")
+            println "Using 7-Zip: ${sevenZipExe}"
+            println "Compressing ${versionFolderName} to ${archiveFile.name} (including top-level folder)..."
+
+            // Run 7z from the parent directory and add the folder by name to preserve the top-level folder in the archive
+            def command = [ sevenZipExe, 'a', '-t7z', archiveFile.absolutePath.toString(), versionFolderName ]
+            def process = new ProcessBuilder(command as String[])
+                .directory(prepPath.parentFile)
+                .redirectErrorStream(true)
+                .start()
+            process.inputStream.eachLine { line -> if (line.trim()) println "  ${line}" }
+            def exitCode = process.waitFor()
+            if (exitCode != 0) throw new RuntimeException("7zip compression failed with exit code: ${exitCode}")
+
+            println "Archive created: ${archiveFile}"
+            println "Generating hash files..."
+            generateHashFiles(archiveFile)
+        } else {
+            def archiveFile = file("${destFile}.zip")
+            if (archiveFile.exists()) delete archiveFile
+            println "Compressing ${versionFolderName} to ${archiveFile.name} (including top-level folder)..."
+            task("zipArchive_${versionToBuild}", type: Zip) {
+                // Include the version folder itself so the archive has the top-level directory
+                from(prepPath.parentFile) {
+                    include "${versionFolderName}/**"
+                }
+                destinationDirectory = archiveFile.parentFile
+                archiveFileName = archiveFile.name
+            }.execute()
+            println "Archive created: ${archiveFile}"
+            println "Generating hash files..."
+            generateHashFiles(archiveFile)
+        }
+
+        println ""
+        println "=".multiply(70)
+        println "[SUCCESS] Release build completed successfully for version ${versionToBuild}"
+        println "Output directory: ${buildPathNonZip}"
+        println "Archive: ${destFile}.${bundleFormat}"
+        println "=".multiply(70)
+    }
+}
+
+// Task: Build all available versions
+tasks.register('releaseAll') {
+    group = 'build'
+    description = 'Build release packages for all available versions in bin/ directory'
+
+    doLast {
+        def versions = getAvailableVersions()
+        if (versions.isEmpty()) throw new RuntimeException('No versions found in bin/ or bin/archived/')
+
+        println ""
+        println "=".multiply(70)
+        println "Building releases for ${versions.size()} ${bundleName} versions"
+        println "=".multiply(70)
+        println ""
+
+        def success = 0
+        def failed = []
+        versions.eachWithIndex { v, idx ->
+            println "=".multiply(70)
+            println "[${idx + 1}/${versions.size()}] Building ${bundleName} ${v}..."
+            println "=".multiply(70)
+            try {
+                gradle.startParameter.projectProperties.put('bundleVersion', v)
+                tasks.getByName('release').actions.each { action -> action.execute(tasks.getByName('release')) }
+                success++
+            } catch (Exception e) {
+                println "[FAILED] ${bundleName} ${v}: ${e.message}"
+                failed.add(v)
+            }
+            println ""
+        }
+
+        println "=".multiply(70)
+        println "Build Summary"
+        println "=".multiply(70)
+        println "Total versions: ${versions.size()}"
+        println "Successful:     ${success}"
+        println "Failed:         ${failed.size()}"
+        if (!failed.isEmpty()) {
+            println "\nFailed versions:"
+            failed.each { println "  - ${it}" }
+            throw new RuntimeException("${failed.size()} version(s) failed to build")
+        } else {
+            println "[SUCCESS] All versions built successfully!"
+        }
+    }
+}
+
+// Task: Enhanced clean task (Gradle project build directory only)
+tasks.named('clean') {
+    group = 'build'
+    description = 'Clean build artifacts (Gradle project build dir)'
+    doLast {
+        def relocatedBuildDir = file(buildDir)
+        if (relocatedBuildDir.exists()) delete relocatedBuildDir
+        println "[SUCCESS] Build artifacts cleaned"
+    }
+}
+
+// Task: Verify build environment
+tasks.register('verify') {
+    group = 'verification'
+    description = 'Verify build environment and dependencies'
+
+    doLast {
+        println 'Verifying build environment for module-perl...'
+        def checks = [:]
+        def javaVersion = JavaVersion.current()
+        checks['Java 8+'] = javaVersion >= JavaVersion.VERSION_1_8
+        checks['build.properties'] = file('build.properties').exists()
+        checks['bin directory'] = file("${projectDir}/bin").exists()
+        if (bundleFormat == '7z') { checks['7-Zip'] = find7ZipExecutable() != null }
+
+        println "\nEnvironment Check Results:"
+        println "-".multiply(60)
+        checks.each { name, passed ->
+            def status = passed ? '[PASS]' : '[FAIL]'
+            println "  ${status.padRight(10)} ${name}"
+        }
+        println "-".multiply(60)
+
+        def allPassed = checks.values().every { it }
+        if (!allPassed) throw new RuntimeException('Build environment verification failed')
+        println '\n[SUCCESS] All checks passed! Build environment is ready.'
+        println "\nYou can now run:\n  gradle release -PbundleVersion=5.40.0   - Build release for version\n  gradle listVersions                     - List available versions"
+    }
+}
+
+// Task: List available bundle versions in bin and bin/archived
+tasks.register('listVersions') {
+    group = 'help'
+    description = 'List all available bundle versions in bin/ and bin/archived/ directories'
+
+    doLast {
+        def versions = getAvailableVersions()
+        if (versions.isEmpty()) { println "\nNo versions found in bin/ or bin/archived/ directories"; return }
+        println "\nAvailable ${bundleName} versions:"
+        println "-".multiply(60)
+        def binDir = file("${projectDir}/bin")
+        def archivedDir = file("${projectDir}/bin/archived")
+        versions.each { v ->
+            def location = ''
+            if (binDir.exists() && file("${binDir}/${bundleName}${v}").exists()) location = '[bin]'
+            else if (archivedDir.exists() && file("${archivedDir}/${bundleName}${v}").exists()) location = '[bin/archived]'
+            println "  ${v.padRight(15)} ${location}"
+        }
+        println "-".multiply(60)
+        println "Total versions: ${versions.size()}"
+        if (!versions.isEmpty()) {
+            println "\nTo build a specific version:"
+            println "  gradle release -PbundleVersion=${versions.last()}"
+        }
+    }
+}
+
+// Task: List all bundle versions from modules-untouched perl.properties
+tasks.register('listReleases') {
+    group = 'help'
+    description = 'List all available releases from modules-untouched perl.properties'
+
+    doLast {
+        def props = fetchModulesUntouchedProperties()
+        if (!props) {
+            println "\n[WARNING] Could not fetch modules-untouched perl.properties.\nNo release information available."
+            return
+        }
+        println "\nAvailable Perl Releases (modules-untouched):"
+        println "-".multiply(80)
+        props.sort { a, b -> a.key <=> b.key }.each { version, url ->
+            println "  ${version.padRight(10)} -> ${url}"
+        }
+        println "-".multiply(80)
+        println "Total releases: ${props.size()}"
+    }
+}
+
+// Task: Check modules-untouched integration
+tasks.register('checkModulesUntouched') {
+    group = 'verification'
+    description = 'Check modules-untouched repository integration and available versions'
+
+    doLast {
+        println ""
+        println "=".multiply(70)
+        println "Modules-Untouched Integration Check"
+        println "=".multiply(70)
+        println ""
+
+        def propsUrl = "https://raw.githubusercontent.com/Bearsampp/modules-untouched/main/modules/perl.properties"
+        println "Repository URL:\n  ${propsUrl}\n"
+
+        println "Fetching perl.properties from modules-untouched..."
+        def untouchedProps = fetchModulesUntouchedProperties()
+
+        if (untouchedProps) {
+            println ""
+            println "=".multiply(70)
+            println "Available Versions in modules-untouched"
+            println "=".multiply(70)
+
+            def sorted = untouchedProps.sort { a, b ->
+                def ap = a.key.tokenize('.')
+                def bp = b.key.tokenize('.')
+                for (int i = 0; i < Math.min(ap.size(), bp.size()); i++) {
+                    def an = ap[i].toInteger()
+                    def bn = bp[i].toInteger()
+                    if (an != bn) return an <=> bn
+                }
+                return ap.size() <=> bp.size()
+            }
+            sorted.each { v, url -> println "  ${v.padRight(10)}" }
+            println "=".multiply(70)
+            println "Total versions: ${untouchedProps.size()}"
+            println ""
+            println "=".multiply(70)
+            println "[SUCCESS] modules-untouched integration is working"
+            println "=".multiply(70)
+            println ""
+            println "Version Resolution Strategy:\n  1. Check modules-untouched perl.properties (remote)\n  2. Construct standard URL format (fallback)"
+        } else {
+            println ""
+            println "=".multiply(70)
+            println "[WARNING] Could not fetch perl.properties from modules-untouched"
+            println "=".multiply(70)
+            println ""
+            println "The build system will fall back to:\n  1. Standard URL format construction"
+        }
+    }
+}
+
+// Task: Validate build.properties
+tasks.register('validateProperties') {
+    group = 'verification'
+    description = 'Validate build.properties configuration'
+    doLast {
+        println 'Validating build.properties...'
+        def required = ['bundle.name', 'bundle.release', 'bundle.type', 'bundle.format']
+        def missing = []
+        required.each { p -> if (!buildProps.containsKey(p) || buildProps.getProperty(p).trim().isEmpty()) missing.add(p) }
+        if (!missing.isEmpty()) {
+            println '[ERROR] Missing required properties:'
+            missing.each { println "  - ${it}" }
+            throw new RuntimeException('build.properties validation failed')
+        }
+        println '[SUCCESS] All required properties are present:'
+        required.each { println "    ${it} = ${buildProps.getProperty(it)}" }
+    }
+}
+
+// ============================================================================
+// BUILD LIFECYCLE HOOKS
+// ============================================================================
+
+gradle.taskGraph.whenReady { graph ->
+    println """
+    ================================================================
+      Bearsampp Module Perl - Gradle Build
+    ================================================================
+    """.stripIndent()
+}
+
+// ============================================================================
+// DEFAULT TASK
+// ============================================================================
+
+defaultTasks 'info'

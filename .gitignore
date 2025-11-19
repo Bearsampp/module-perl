@@ -15,3 +15,9 @@
 
 # Qodo
 /.qodo
+
+# Gradle
+.gradle/
+build/
+*.gradle.kts.compiled
+.gradle-cache/
