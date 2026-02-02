@@ -516,6 +516,14 @@ tasks.register('release') {
         perlExe = file("${bundleSrcFinal}/perl.exe")
         if (!perlExe.exists()) { throw new RuntimeException("perl.exe not found at ${perlExe}") }
 
+        // If bundleSrcFinal points to perl/bin, we need to go up to the root of the Strawberry Perl distribution
+        // The structure should be: c/, cpan/, data/, licenses/, perl/, win32/ at the root level
+        if (bundleSrcFinal.name == 'bin' && bundleSrcFinal.parentFile?.name == 'perl') {
+            // Go up two levels: from perl/bin to the root containing c/, cpan/, perl/, etc.
+            bundleSrcFinal = bundleSrcFinal.parentFile.parentFile
+            println "Adjusted source to Strawberry Perl root directory: ${bundleSrcFinal}"
+        }
+
         println "Source folder: ${bundleSrcFinal}"
         println ""
 
@@ -525,14 +533,15 @@ tasks.register('release') {
         if (prepPath.exists()) { delete prepPath }
         prepPath.mkdirs()
 
-        // Copy Perl files from source
-        println "Copying ${bundleName} files..."
+        // Copy entire Strawberry Perl portable structure (c/, cpan/, data/, licenses/, perl/, win32/, etc.)
+        println "Copying ${bundleName} portable distribution..."
         copy { from bundleSrcFinal; into prepPath }
 
-        // Overlay files from bin bundle directory (if different)
-        if (bundleSrcDest.absolutePath != bundleSrcFinal.absolutePath) {
-            println "Overlaying bundle files from bin directory..."
-            copy { from bundleSrcDest; into prepPath }
+        // Overlay/copy bearsampp.conf from bin directory to root
+        def confFile = file("${bundleSrcDest}/bearsampp.conf")
+        if (confFile.exists()) {
+            println "Copying bearsampp.conf to root..."
+            copy { from confFile; into prepPath }
         }
 
         // Copy to bundles_build directory (non-archive version for dev)
