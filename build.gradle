@@ -537,11 +537,15 @@ tasks.register('release') {
         println "Copying ${bundleName} portable distribution..."
         copy { from bundleSrcFinal; into prepPath }
 
-        // Overlay/copy bearsampp.conf from bin directory to root
+        // Overlay/copy bearsampp.conf from bin directory to root with token replacement
         def confFile = file("${bundleSrcDest}/bearsampp.conf")
         if (confFile.exists()) {
-            println "Copying bearsampp.conf to root..."
-            copy { from confFile; into prepPath }
+            println "Copying bearsampp.conf to root with token replacement..."
+            def confContent = confFile.text
+            confContent = confContent.replace('@RELEASE_VERSION@', bundleRelease)
+            def destConfFile = file("${prepPath}/bearsampp.conf")
+            destConfFile.text = confContent
+            println "  Replaced @RELEASE_VERSION@ with ${bundleRelease}"
         }
 
         // Copy to bundles_build directory (non-archive version for dev)
