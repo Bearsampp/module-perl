@@ -167,12 +167,12 @@ def downloadFromModulesUntouched(String version) {
         } else {
             println "Version ${version} not found in modules-untouched perl.properties"
             println "Attempting to construct URL based on standard format..."
-            untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${version}/perl-${version}-win64.7z"
+            untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${bundleRelease}/strawberry-perl-${version}-64bit-portable.zip"
             println "  ${untouchedUrl}"
         }
     } else {
         println "Could not fetch perl.properties, using standard URL format..."
-        untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${version}/perl-${version}-win64.7z"
+        untouchedUrl = "https://github.com/Bearsampp/modules-untouched/releases/download/perl-${bundleRelease}/strawberry-perl-${version}-64bit-portable.zip"
         println "  ${untouchedUrl}"
     }
 
@@ -216,6 +216,7 @@ def downloadFromModulesUntouched(String version) {
 }
 
 // Download and extract Perl binaries, return directory that contains perl.exe
+
 def downloadAndExtractPerl(String version) {
     def downloadedFile = downloadFromModulesUntouched(version)
 
