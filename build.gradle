@@ -291,7 +291,24 @@ def getAvailableVersions() {
             ?.findAll { it.isDirectory() && it.name.startsWith(bundleName) }
             ?.collect { it.name.replace(bundleName, '') } ?: [])
     }
-    return versions.unique().sort()
+// Remove duplicates and sort semantically
+    return versions.unique().sort { a, b ->
+        def aParts = a.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+        def bParts = b.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+        int maxLen = Math.max(aParts.size(), bParts.size()) as int
+        for (int i = 0; i < maxLen; i++) {
+            def aVal = i < aParts.size() ? aParts[i] : 0
+            def bVal = i < bParts.size() ? bParts[i] : 0
+            if (aVal instanceof Integer && bVal instanceof Integer) {
+                if (aVal != bVal) return aVal <=> bVal
+            } else {
+                def aStr = aVal.toString()
+                def bStr = bVal.toString()
+                if (aStr != bStr) return aStr <=> bStr
+            }
+        }
+        return 0
+    }
 }
 
 // ============================================================================
@@ -777,14 +794,21 @@ tasks.register('checkModulesUntouched') {
             println "=".multiply(70)
 
             def sorted = untouchedProps.sort { a, b ->
-                def ap = a.key.tokenize('.')
-                def bp = b.key.tokenize('.')
-                for (int i = 0; i < Math.min(ap.size(), bp.size()); i++) {
-                    def an = ap[i].toInteger()
-                    def bn = bp[i].toInteger()
-                    if (an != bn) return an <=> bn
+                def aParts = a.key.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+                def bParts = b.key.tokenize('.').collect { it.isInteger() ? it.toInteger() : it }
+                int maxLen = Math.max(aParts.size(), bParts.size()) as int
+                for (int i = 0; i < maxLen; i++) {
+                    def aVal = i < aParts.size() ? aParts[i] : 0
+                    def bVal = i < bParts.size() ? bParts[i] : 0
+                    if (aVal instanceof Integer && bVal instanceof Integer) {
+                        if (aVal != bVal) return aVal <=> bVal
+                    } else {
+                        def aStr = aVal.toString()
+                        def bStr = bVal.toString()
+                        if (aStr != bStr) return aStr <=> bStr
+                    }
                 }
-                return ap.size() <=> bp.size()
+                return 0
             }
             sorted.each { v, url -> println "  ${v.padRight(10)}" }
             println "=".multiply(70)
